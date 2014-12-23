@@ -26,10 +26,10 @@
 //A mini Cobra JavaScript Library based on jQuery
 (function($, win){
     //  we won't use strict mode here
-    var isAMD = typeof define != "undefined" && define.amd,
-        doc = win.document, __synthesizes = [],
+    var doc = win.document, __synthesizes = [],
         op = Object.prototype,
         noop = function(){},
+        __uidSeed = 1,
     // get IE version
     IE = (function(){
         var v = 3,
@@ -45,6 +45,12 @@
     cobra.version = "0.1rc1";
     //locale
     cobra.locale = "zh-cn";
+
+    cobra.uid = function(){
+        return "_" + __uidSeed++;
+    };
+
+    cobra.config = {};
     //directive prefix
     //won't use this directive in phase one
     //TODO:
@@ -124,6 +130,39 @@
             return f && f.apply(scope || this, pre.concat(args)); // mixed
         };
     }
+    function isEmpty(it){
+
+        for(var p in it){
+            return 0;
+        }
+        return 1;
+    }
+    function safeMix(dest, src){
+        for(var p in src){
+            if(p && p.indexOf("__") == 0){
+                continue;
+            }
+            dest[p] = src[p];
+        }
+        return dest;
+    }
+    //This is a temporary function to  handler the diff event across the browsers
+    //The event control will be moved to be an individual module
+    var domOn = function (node, eventName, ieEventName, handler){
+        // Add an event listener to a DOM node using the API appropriate for the current browser;
+        // return a function that will disconnect the listener.
+        if(window.addEventListener){
+            node.addEventListener(eventName, handler, false);
+            return function(){
+                node.removeEventListener(eventName, handler, false);
+            };
+        }else{
+            node.attachEvent(ieEventName, handler);
+            return function(){
+                node.detachEvent(ieEventName, handler);
+            };
+        }
+    };
     //+++++++++++++++++++++++++A mini observe engine begin +++++++++++++++++++++++++++
 
 
@@ -601,6 +640,742 @@
         return declare;
     })();
     //+++++++++++++++++++++++++OO implementation end+++++++++++++++++++++++++++
+    //+++++++++++++++++++++++++something about AMD start+++++++++++++++++++++++++++
+    (function(v){
+        /**
+         *
+         * @type {{state: {ERROR: number, ABANDON: number, INIT: number, REQUESTED: number, ARRIVED: number, EXECUTING: number, EXECUTED: number}}}
+         * @private
+         */
+        v.__AMD = {
+            //the states of module
+            state : {
+                "ERROR"     : 23, //error happens
+                "ABANDON"   : 110, //not a module
+                "INIT"      : 0,
+                "REQUESTED" : 1, //appending a script element inito the document
+                "ARRIVED"   : 2, //the script that contatined the module arrived
+                "EXECUTING" : 3, //in process of traversing dependencies and ruinning factory
+                "EXECUTED"  : 4 //factory has been exectued
+            }
+        };
+        /**
+         * @param cfg
+         *      pid     : the package identifier to which the module belongs (e.g., "bl"); "" indicates the system or default package
+         *      mid     : the fully-resolved (i.e., mappings have been applied) module identifier without the package identifier (eg:bl/dom/selector)
+         *      url     : the URL from which the module was retrieved
+         *      pack    : the package object of the package to which the module belongs
+         *      executed: the state of the package object has been executed
+         *      deps    : the dependency vector for this module (vector of modules objects)
+         *      factory : the factory for this module
+         *      result  : the result of the running the factory for this module
+         *      plugin  : TODO:
+         * @constructor
+         */
+        var Module = function(cfg){
+            this.context = v.__AMD;
+            this.pid = "";
+            this.mid = "";
+            this.url = "";
+            this.pack = null;
+            this.executed =  this.context.state.INIT;
+            this.deps = {}; //
+            this.factory = noop;
+            this.result = null;
+            this.attached =  this.context.state.INIT;
+            this.plugin = null;
+            $.extend(this, cfg);
+        };
+        /**
+         *
+         * @param name
+         * @param refMod
+         * @param packs
+         * @param mods
+         * @param aliases
+         * @returns {*}
+         */
+        function getModInfo(name, refMod, packs, mods, aliases){
+            var isRelative = /^\./.test(name), match, pid, pack, rs, url, midInPackage;
+            if(/(^\/)|(\:)|(\.js$)/.test(name) || (isRelative && !refMod)){
+                //not a module but just a URL of some sort
+                return  new Module({
+                    pid : 0,
+                    mid : name,
+                    pack : 0,
+                    url : /\.js$/.test(name) ? name : name + ".js"
+                });
+            }else{
+                //relative to reference module
+                //get rid of any dots
+                name = v.__AMD.pkg.redress(isRelative ? (refMod.mid + "/../" + name) : name);
+                //make sure is that a relatvei path
+                if(/^\./.test(name)){
+                    throw new Error("irrationalPath", name);
+                }
+                //map the name
+                //a1/a2 --> $0:a1/a2, $1:a1, $2:/a2, $3:a2
+                match = name.match(/^([^\/]+)(\/(.+))?$/);
+                pid = match ? match[1] : "";
+                pack = v.__AMD.packs[pid];
+                if(pack){
+                    name = pid + "/" + (midInPackage = match[3] || pack.m);
+                }else{
+                    pid = "";
+                }
+                //search aliases
+                //TODO:
+                var hit = false;
+                $.each(v.__AMD.aliases, function(index, aliasMap){
+                    match = name.match(aliasMap[0]);
+                    if(match && match.length > 0){
+                        hit = $.isFunction(aliasMap[1]) ? name.replace(aliasMap[0], aliasMap[1]) : aliasMap[1];
+                        return false;
+                    }
+                });
+                if(hit){
+                    return getModInfo(hit, 0, packs, mods, aliases);
+                }
+                rs = v.__AMD.mods[name];
+                if(rs){
+                    return v.__AMD.mods[name];
+                }
+            }
+            if(pid){
+                url = pack.path + "/" + midInPackage;
+            }else{
+                url = name;
+            }
+            // if result is not absolute, add baseUrl
+            if(!(/(^\/)|(\:)/.test(url))){
+                if(pid ){
+                    url = pack.baseUrl ?  pack.baseUrl + url : v.__AMD.baseUrl + url;
+                }else{
+                    url = v.__AMD.baseUrl + url;
+                }
+            }
+            url += ".js";
+            return new Module({
+                pid : pid,
+                mid : name,
+                pack : pack,
+                url : v.__AMD.pkg.redress(url)
+            });
+        }
+        /**
+         * Internal function only use by AMD
+         * @param event
+         * @param a1
+         * @param a2
+         * @param a3
+         */
+        function injectOnLoad(event, a1, a2, a3){
+            event = event||window.event;
+            var node = event.target||event.srcElement;
+            if(event.type === "load" || /complete|loaded/.test(node.readyState)){
+                a1 && a1();
+                a2 && a2();
+                a3 && a3();
+            }
+        }
+        /**
+         * A loader engine
+         *
+         * example:
+         *          {
+     *              pkgs : [{
+     *                  name : "myapp",
+        *               path : "/js/myapp",
+        *               baseUrl : ""  //baseUrl to repleace the top parent baseUrl
+     *              }]
+     *          }
+         *
+         * @type {{}}
+         */
+        $.extend(v.__AMD, {
+
+            baseUrl : "./",
+
+            timeout : 15000,
+
+            cache : false,
+
+            cacheMaps : {}, //TODO
+
+            checkCompleteGuard : 0,
+
+            defOrder : 0, //
+
+            defQ : [], // The queue of define arguments sent to loader.
+
+            execQ : [], //The list of modules that need to be attacthed.
+
+            hangQ : {}, // The set of modules upon which the loader is waiting for definition to arrive
+
+            abortExec : {},
+
+            injectingMod : 0,
+
+            //the nodes used to locate where scripts are injected into the document
+            insertPointSibling : 0,
+
+            defaultCfg : {
+
+                cache : false, //dev mode : false
+
+                pkgs : [],
+                async : true,  //do we need it????
+
+                timeout : 7000  //by default is 7 seconds
+            },
+
+            sniffCfg : {}, //give vecfg as sniffed from script tag
+
+            packs : {}, //a map from packageId to package configuration object
+
+            aliases : [], //a vetor of pairs of [regexs or string, replacement] = > (alias, actual)
+
+
+            /**
+             *A hash:(mid) --> (module-object) the module namespace
+             *The module-object can refer to Module class
+             */
+            mods : {
+                "lang" : new Module({mid:"lang", executed : 4}),
+                "public" : new Module({mid:"public", executed : 4}),
+                "module"  :  new Module({mid:"module", executed : 4})
+            },
+            /**
+             * Stores the modules which will be initialized at the end of laoder initialization
+             */
+            deferMods : [],
+
+            guard : {
+                checkComplete : function(/*Function*/process){
+                    try{
+                        v.__AMD.checkCompleteGuard++;
+                        process();
+                    }finally{
+                        v.__AMD.checkCompleteGuard--;
+                    }
+                    //!v.__AMD.defQ.length && v.__lang.isEmpty(v.__AMD.hangQ)&& !v.__AMD.execQ.length && !v.__AMD.checkCompleteGuard
+                },
+                monitor : function(){
+                    //keep going
+                    if(v.__AMD.checkCompleteGuard) return;
+                    this.checkComplete(function(){
+                        for(var currentDefOrder, module, i = 0; i < v.__AMD.execQ.length;){
+                            currentDefOrder = v.__AMD.defOrder;
+                            module =  v.__AMD.execQ[i];
+                            module.execute();
+                            if(currentDefOrder != v.__AMD.defOrder){
+                                // defOrder was bumped one or more times indicating something was executed
+                                i = 0;
+                            }else{
+                                //nothing haapend; check the next module in the exec queue
+                                i++;
+                            }
+                        }
+                    });
+                }
+            },
+
+            timer : {
+                tId : 0,
+                start : function(){
+                    this.clear();
+                    if(v.__AMD.timeout){
+                        this.tId = win.setTimeout(ride(this, function(){
+                            this.clear();
+                            throw new Error("request timeout");
+                        }), v.__AMD.timeout);
+                    }
+                },
+                clear : function(){
+                    this.tId && win.clearTimeout(this.tId);
+                    this.tId = 0;
+                }
+            },
+
+            pkg : {
+                /**
+                 * redress the path
+                 * @param path
+                 * @returns {string}
+                 */
+                redress : function(path){
+                    //console.log(path);
+                    if(!path) return "";
+                    //reform the string
+                    path = path.replace(/\\/g, '/').replace(/[^\/]+(?=\/)\//g, function($0){
+                        return $0 == "./" ? "" : $0;
+                    });
+                    var cRegx = /[^\/]+\/\.\.\//g,
+                        startWithRelative = (path.indexOf("../") === 0), prefix = "";
+                    if(startWithRelative){
+                        prefix = "../";
+                        path = path.substr(prefix.length);
+                    }
+                    while(/\.\.\//.test(path) && path.indexOf("../") != 0){
+                        path = path.replace(cRegx, function(){ return "" });
+                    }
+                    return prefix + path;
+                },
+
+
+                /**
+                 *
+                 * @param name
+                 * @param refMod
+                 */
+                getModule : function(name, refMod){
+                    if(!name) return null;
+                    var match = name.match(/^(.+?)\>(.*)$/);
+                    if(match){
+                        //match[1] plugin module
+                        //match[2] plulgin
+                        //TODO: won't handle plugin here
+                        //TODO: move to phase 2
+                        //name was {plugin-module}>{plugin-resource}
+                        //var plugin = this.getModule(match[1], refMod);
+                    }else{
+                        var rs = getModInfo(name, refMod, v.__AMD.packs, v.__AMD.mods, v.__AMD.aliases);
+                        var mod = v.__AMD.mods[rs.mid];
+                        if(mod) return mod;
+                        return v.__AMD.mods[rs.mid] = rs;
+                    }
+                },
+                /**
+                 * agument package info
+                 * @param pkg
+                 */
+                aumentPkgInfo : function(pkg){
+                    //assumpation the package object passed in is full-resolved
+                    var name = pkg.name;
+                    pkg = $.extend({m:"m"}, pkg);
+                    pkg.path = pkg.path ? pkg.path : name;
+                    //
+                    if(!pkg.m.indexOf("./")){
+                        pkg.m = pkg.m.substr(2);
+                    }
+                    //put agumented pkg info in packs
+                    v.__AMD.packs[name] = pkg;
+                },
+
+
+                /**
+                 *
+                 * Spring 1: we won't handle any cache mechanism here
+                 * Spring 2: Add a configure attribute to handle a set of resources which forced to refresh by version
+                 * Spring 3: TODO:
+                 * @param cfg
+                 * @param boot
+                 * @param refMod
+                 */
+                configure : function(cfg, boot, refMod){
+                    if(!cfg || cfg.length == 0) return;
+                    //timeout timer
+                    v.__AMD.timeout = cfg['timeout']|| v.__AMD.defaultCfg.timeout;
+                    //if true, will generate a random number along with module to flush the cache
+                    v.__AMD.cache = cfg['cache'] ||v.__AMD.defaultCfg.cache;
+                    //augment the package info
+                    cfg.pkgs = cfg.pkgs||[];
+                    cfg.aliases = cfg.aliases||[];
+                    $.each(cfg.pkgs, ride(this, function(index,pkg){
+                        this.aumentPkgInfo(pkg);
+                    }));
+                    //map aliases
+                    //override will happen if the key name is the same
+                    //key name has to be unique
+                    $.each(cfg.aliases, function(index, aliase){
+                        if($.type(aliase[0]) === "string"){
+                            aliase[0] = aliase[0].replace(/([\.$?*|{}\(\)\[\]\\\/\+^])/g, function(str) { return "\\" + str });
+                        }
+                        v.__AMD.aliases.push([new RegExp("^" + aliase[0] + "$"), aliase[1]]);
+                    });
+                    if(cfg['debug']){
+                        getProp(["__debug"], true, v).state = cfg['debug'];
+                    }
+                },
+
+                context : {
+                    init : function(name, dependencies, factory, refMod){
+                        var mod, syntheticMid;
+                        if($.isArray(name)){
+                            syntheticMid = "use*" + cobra.uid();
+                            //resolve the request list with respect to the reference module
+                            for(var mid, deps = [], i = 0, l = name.length; i <l;){
+                                mid = name[i++];
+                                deps.push(v.__AMD.pkg.getModule(mid, refMod));
+                            }
+                            //construct a synthetic module to control execution of the request list
+                            mod = $.extend(new Module({pid:"", mid:syntheticMid, pack:0, url:""}), {
+                                attached : v.__AMD.state.ARRIVED,
+                                deps : deps,
+                                factory : factory||dependencies||noop
+                            });
+                            v.__AMD.mods[mod.mid] = mod;
+                            //attach the module
+                            mod.attachDeps();
+                            //
+                            var strict = v.__AMD.checkCompleteGuard;
+                            v.__AMD.guard.checkComplete(function(){
+                                mod.execute(strict);
+                            });
+                            if(!mod.executed){
+                                // some deps weren't on board or circular dependency detected and strict; therefore, push into the execQ
+                                v.__AMD.execQ.push(mod);
+                            }
+                            v.__AMD.guard.monitor();
+                        }
+                    },
+                    exposeLang : function(){
+                        return {};
+                    }
+                },
+                /**
+                 * insert a script element to the insert-point element with src=url;
+                 * apply callback upon detecting the script has loaded.
+                 * @param url
+                 * @param cb
+                 * @param module
+                 */
+                inject : function(url, cb, module){
+                    var node = module.script = doc.createElement("script");
+                    var loadHandler = domOn(node, "load", "onreadystatechange", function(e){
+                        injectOnLoad(e, loadHandler, errorHandler, cb);
+                    });
+                    var errorHandler = domOn(node, "error", "onerror", function(e){
+                        injectOnLoad(e, loadHandler, errorHandler, function(){
+                            throw new Error("Inject script error from : " + url);
+                        });
+                    });
+                    node.type = "text/javascript";
+                    node.charset = "utf-8";
+                    node.src = url;
+                    v.__AMD.insertPointSibling.parentNode.insertBefore(node, v.__AMD.insertPointSibling);
+                    return node;
+                },
+                /**
+                 *
+                 * @param refMod
+                 */
+                runDefQ : function(refMod){
+                    // defQ is an array of [id, dependencies, factory]
+                    var definedModules = [],
+                        module, args;
+                    while(v.__AMD.defQ.length){
+                        args = v.__AMD.defQ.shift();
+                        module = (args[0] && this.getModule(args[0]))||refMod;
+                        definedModules.push([module, args[1], args[2]]);
+                    }
+                    $.each(definedModules, ride(this, function(index, args){
+                        var module = this.defineModule.apply(this, args);
+                        module.attachDeps();
+                    }));
+                },
+                /**
+                 *
+                 * @param module
+                 * @param deps
+                 * @param factory
+                 */
+                defineModule : function(module, deps, factory){
+                    if(module.attached == v.__AMD.state.ARRIVED){
+                        //TODO:
+                        throw new Error("module multiple define");
+                        return module;
+                    }
+                    //mix
+                    $.extend(module,{
+                        deps : deps,
+                        factory : factory,
+                        //common js module identifier
+                        cjs : {
+                            "id" : module.mid,
+                            "uri" : module.url,
+                            "public" : (module.result = {}),
+                            //
+                            "config" : function(){
+                                return module.config;
+                            }
+                        }
+                    });
+                    //resolve deps with respect to this module
+                    for(var i = 0; deps[i]; i++){
+                        deps[i] = this.getModule(deps[i], module);
+                    }
+                    module.arrived();
+                    if(!$.isFunction(factory) && !deps.length){
+                        module.result = factory;
+                        module.done();
+                    }
+                    return module;
+                }
+            }
+        });
+
+        /**
+         * properties of Module
+         */
+        $.extend(Module.prototype, {
+            /**
+             * when appending a script element inito the document
+             */
+            requested : function(){
+                this.attached = this.context.state.REQUESTED;
+                this.context.hangQ[this.mid] = 1;
+                if(this.url){
+                    this.context.hangQ[this.url] = this.pack||1;
+                }
+                this.context.timer.start();
+            },
+            /**
+             * the script that contatined the module arrived
+             */
+            arrived : function(){
+                this.attached = this.context.state.ARRIVED;
+                delete this.context.hangQ[this.mid];
+                if(this.url){
+                    delete this.context.hangQ[this.url];
+                }
+                if(isEmpty(this.context.hangQ)){
+                    this.context.timer.clear();
+                }
+            },
+            /**
+             *Attach the dependencies of the module
+             */
+            attachDeps : function(){
+                var that = this;
+                this.context.guard.checkComplete(ride(this, function(){
+                    $.each(that.deps, function(index, dep){
+                        dep.attach();
+                    });
+                }));
+            },
+            /**
+             * Attach the module
+             */
+            attach : function(){
+                var mid = this.mid, url = this.url;
+                if(this.executed || this.attached || this.context.hangQ[mid]||
+                    (this.url && (this.pack && this.context.hangQ[this.url] === this.pack) ||
+                        this.context.hangQ[this.url] == 1)){
+                    return;
+                }
+                this.requested();
+                //all we done is only to support AMD mode
+                //so in this mode, the module will be attached by script injection
+                this.context.injectingMod = this;
+                this.context.pkg.inject(url, ride(this, function(){
+                    var context = this.context;
+                    context.pkg.runDefQ(this);
+                    if(this.attached !== context.state.ARRIVED){
+                        this.arrived();
+                        //TODO:is it necessary ????
+                        $.extend(this, {
+                            attached : context.state.ARRIVED,
+                            executed : context.state.EXECUTED
+                        });
+                    }
+                    context.guard.monitor();
+                }), this);
+                this.context.injectingMod = 0;
+            },
+            /**
+             * Attach the module
+             * @param strict : execute in strict mode or not
+             */
+            execute : function(strict){
+                if(this.executed === this.context.state.EXECUTING){
+                    // run the dependency vector, then run the factory for module
+                    // TODO:
+                    return this.context.abortExec;
+                }
+                if(!this.executed){
+                    if(this.factory === noop){
+                        return this.context.abortExec;
+                    }
+                    var deps = this.deps||[],
+                        arg, argRS, args = [], i = 0;
+                    this.executed = this.context.state.EXECUTING;
+                    while((arg = deps[i++])){
+                        // for circular dependencies, assume the first module encountered was executed OK
+                        // modules that circularly depend on a module that has not run its factory will get
+                        // an empty object(module.result = {}). They can take a reference to this object and/or
+                        // add properties to it. When the module finally runs its factory, the factory can
+                        // read/write/replace this object. Notice that so long as the object isn't replaced, any
+                        // reference taken earlier while walking the deps list is still valid.
+                        argRS = (arg === this.context.mods["lang"]) ? this.context.pkg.context.exposeLang() :
+                            (arg === this.context.mods["public"]) ? (this.cjs && this.cjs.public) :
+                                (arg === this.context.mods["module"]) ? this.cjs : arg.execute(strict);
+
+                        //
+                        if(argRS === this.context.abortExec){
+                            this.executed = this.context.state.INIT;
+                            return this.context.abortExec;
+                        }
+                        args.push(argRS);
+                    }
+                    //
+                    this.runFactory(args);
+                    this.done();
+                }
+                return this.result;
+            },
+            /**
+             *
+             * @param args
+             */
+            runFactory : function(args){
+                var result = $.isFunction(this.factory) ? this.factory.apply(null, args) : this.factory;
+                this.result = result ? result : (this.cjs ? this.cjs["public"] : {});
+            },
+
+            done : function(){
+                this.executed = this.context.state.EXECUTED;
+                this.defOrder = this.context.defOrder++;
+                //TODO: plugin
+                //remove all occurrences of this module from the execQ
+                for(var i = 0; i < this.context.execQ.length;){
+                    if(this.context.execQ[i] === this){
+                        this.context.execQ.splice(i,1);
+                    }else{
+                        i++;
+                    }
+                }
+                //delete references to sythentic modules
+                if(/^use\*/.test(this.mid)){
+                    delete this.context.mods[this.mid];
+                }
+            }
+        });
+
+        //var logger = v.logger("Bolin/AMD");
+        /**
+         *
+         * @type {{defalutDeps: string[], use: use, add: add}}
+         */
+        v.__AMD.BoLin = {
+
+            defalutDeps : ["lang", "public", "module"],
+
+            /**
+             * Summary:
+             *      Won't support synchronize mode here
+             *      So we assume that all the modules have been well-defined before calling use method
+             *
+             * Description:
+             *
+             * @param name(Array) an array of module names
+             * @param deps
+             * @param factory
+             */
+            use : function(name, deps, factory){
+                v.__AMD.pkg.context.init(name, deps, factory);
+            },
+            /**
+             *
+             * @param name
+             * @param deps
+             * @param factory
+             *
+             * eg: def("lang");
+             */
+            add : function(name, deps, factory){
+                var l = arguments.length,
+                    args = [0, name, deps];
+                if(l == 1){
+                    args = [0, $.isFunction(name) ? this.defalutDeps :[], name];
+                }else if(l == 2 && $.type(name) === "string"){
+                    args = [name, $.isFunction(deps) ? this.defalutDeps :[], deps];
+                }else if(l == 3){
+                    args = [name, deps, factory];
+                }
+
+                if(args[1] === this.defalutDeps){
+                    //Remove comments from the callback string,
+                    //look for use calls, and pull them into the dependencies,
+                    //but only if there are function args.
+                    args[2].toString().replace(/(\/\*([\s\S]*?)\*\/|\/\/(.*)$)/mg, "").replace(/[^.]\s*use\s*\(\s*["']([^'"\s]+)["']\s*\)/g, function(match, dep){
+                        //
+                        args[1].push(dep);
+                    });
+                }
+                var targetModule = args[0] && v.__AMD.pkg.getModule(args[0]), mod;
+                if(targetModule && !v.__AMD.hangQ[targetModule.mid]){
+                    mod = v.__AMD.pkg.defineModule(targetModule, args[1], args[2]);
+                    mod.attachDeps();
+                }else if(IE===false){
+                    v.__AMD.defQ.push(args);
+                }else{
+                    //add IE support
+                    //TODO: re-build  in next version
+                    targetModule = targetModule || v.__AMD.injectingMod;
+                    if(!targetModule){
+                        for(name in v.__AMD.hangQ){
+                            var module = v.__AMD.mods[name];
+                            if(module && module.script && module.script.readyState === "interactive"){
+                                targetModule = module;
+                                break;
+                            }
+                        }
+                    }
+                    if(targetModule){
+                        mod = v.__AMD.pkg.defineModule(targetModule, args[1], args[2]);
+                        mod.attachDeps();
+                    }
+                    v.__AMD.guard.monitor();
+                }
+            }
+        };
+
+        //only for easy use
+        v.use = v.__AMD.BoLin.use;
+        v.add = v.__AMD.BoLin.add;
+    })(cobra);
+    //+++++++++++++++++++++++++something about AMD end+++++++++++++++++++++++++++
+    //looks for a src attribute ending in cobra.js
+    (function(v){
+        //
+        var scripts = doc.getElementsByTagName("script"),
+            i = 0, l = scripts.length, script,src, match;
+        while(i < l){
+            script = scripts[i++];
+            if((src = script.getAttribute("src")) && (match = src.match(/(((.*)\/)|^)cobra\.js(\W|$)/i))){
+                //sniff bl dir and baseUrl
+                //v.__loader.baseUrl = (match[3] + "/") ||"./";
+                v.__AMD.baseUrl = (match[3] + "/") || "./";
+                //remember an inster point sibling
+                v.__AMD.insertPointSibling = script;
+            }
+            if(src = script.getAttribute("cbcfg")){
+                v.__AMD.sniffCfg = v.eval("({ " + src + " })");
+                //remember an inster point sibling
+                v.__AMD.insertPointSibling = script;
+            }
+
+        }
+    })(cobra);
+
+
+    //+++++++++++++++++++++++++Internal cfg begin+++++++++++++++++++++++++++
+    win.cobraCfg = {
+        pkgs : [
+            {
+                name : "api",
+                path : "../cfg/api"
+            },
+            {
+                name : "schema",
+                path : "../cfg/schema"
+            }
+        ],
+        async : true,
+        debug : false
+    };
+    //+++++++++++++++++++++++++Internal cfg end  +++++++++++++++++++++++++++
 
     //+++++++++++++++++++++++++A Base class pre-defined begin+++++++++++++++++++++++++++
     cobra._({
@@ -619,6 +1394,8 @@
         _attrHash : {}, // to cache attribute names and their getter and setter
 
         propertyCallbacks : [],
+
+        api : "test",
         /**
          * constructor
          *
@@ -629,16 +1406,18 @@
          * }
          *
          */
-        ctor : function(){
-            cobra.aspect.before(this, "_bootstrap", this.onBeforeBootStrap);
-            cobra.aspect.after(this, "_bootstrap", this.onPostBootStrap);
+        ctor : function(args){
             //some methods related to the changes of DOM operation
             var self = this,
-            notify = function(){
-                self.notify.call(self, arguments, this);
-            };
+                notify = function(){
+                    self.notify.call(self, arguments, this);
+                };
 
-            cobra.aspect.after($.fn, "append",notify);
+            this._options = args||false;
+            cobra.aspect.after(this, "onPostBootStrap", this.postCreate);
+            cobra.aspect.before(this, "_bootstrap", this.onBeforeBootStrap);
+            cobra.aspect.after(this, "_bootstrap", this.onPostBootStrap);
+            cobra.aspect.after($.fn, "append", notify);
             //don't allow to use attr to add/remove cb-node currently
             //TODO: add support
             //cobra.aspect.after($.fn, "attr", notify);
@@ -664,7 +1443,15 @@
             cobra.aspect.after($.fn, "empty", notify);
             cobra.aspect.after($.fn, "remove", notify);
             cobra.aspect.after($.fn, "detach", notify);
-            this._bootstrap(arguments);
+
+            var def = new $.Deferred();
+            $.when(def).done(ride(self,function(){
+                this._bootstrap();
+            }));
+            cobra.use(["api/" + self.api], ride(this, function(api){
+                this.api = api;
+                def.resolve();
+            }));
         },
 
         _bootstrap : function(){
@@ -676,10 +1463,9 @@
                     //clear it
                     $elem = attr = null;
                 }));
-                if(arguments){
-                    var options = arguments[0][0];
-                    if(options.selector){
-                        $.each(options.selector, ride(this,function(index, s){
+                if(this._options){
+                    if(this._options.selector){
+                        $.each(this._options.selector, ride(this,function(index, s){
                             this.notifyQ(s);
                         }));
                     }
@@ -687,7 +1473,6 @@
                 this._booted = true;
             }
         },
-
         _helper$ : function(name, value){
             var _name = "_" + name;
             if(this._watchCallbacks && !this._watchCallbacks["_" + _name]){
@@ -851,21 +1636,64 @@
                 }
             }
         },
-        request : function(){
-            //
+        /**
+         * see the options of jQuery Ajax
+         * The only different is we use name instead of url here
+         * eg:
+         *      {
+         *          name : "api1",
+         *          type : "POST",
+         *          dataType : "json",
+         *          success :
+         *          error :
+         *          ...
+         *      }
+         * @param options
+         */
+        request : function(options){
+            if(!options.name) { throw new Error("No API name is defined!");}
+            var name = options.name;
+            delete options.name;
+            options.url = this.api[name];
+            options = $.extend({dataType:"json"}, options);
+            var success = options.success, failed = options.error;
+            options.success = ride(this, function(){
+                //load schema
+                $.use(["schema/" + name], ride(this,function(){
+                    //validate json through schema
+                    
+                }));
+            });
+            $.ajax(options);
         },
         //interface can be implemented by sub-classes
         onBeforeBootStrap : noop,
         //interface can be implemented by sub-classes
         onPostBootStrap : noop,
-        update : noop
+        update : noop,
+        //sub-class should implement this method,
+        //this funciton will be executed after onPostBootStrap
+        postCreate : noop
     });
     //+++++++++++++++++++++++++A Base class pre-defined end+++++++++++++++++++++++++++
-    //
+    //boot start
+    cobra.boot = function(config) {
+        cobra.__AMD.pkg.configure(cobra.__AMD.defaultCfg);
+        cobra.__AMD.pkg.configure(config);
+        cobra.__AMD.pkg.configure(cobra.__AMD.sniffCfg);
+    }
+    //before booting, set AMD user config
+    cobra.boot(cobraCfg);
+    cobra = safeMix({},cobra);
+
+
+    //test
     $(function(){
         var boot = new cobra.base({selector : ['.a']});
-        var span = $("<span cb-node='test3'>test</span>");
-        boot.$.test1.append(span);
-        console.log(boot);
+        //var span = $("<span cb-node='test3'>test</span>");
+        //boot.$.test1.append(span);
+        //console.log(boot.$.test1);
     });
+
+
 })(jQuery, window);

@@ -21,12 +21,13 @@
  * Created by Louis Y P Chen on 2014/12/22.
  * This library is a mini version of BoLin
  * To check BoLin, we can check here: https://github.com/louisypchan/BoLin/tree/0.1rc1
+ * Cobra is based on jQuery and doT
  */
 
 //A mini Cobra JavaScript Library based on jQuery
-(function($, win){
+(function($, win, T){
     //  we won't use strict mode here
-    var doc = win.document, __synthesizes = [],
+    var doc = win.document,
         op = Object.prototype,
         noop = function(){},
         __uidSeed = 1,
@@ -41,20 +42,44 @@
 
         return v > 4 ? v : !v;
     })();
+    if(!IE && doc.attachEvent){
+        //use userAgent to check IE's version
+        IE = win.navigator.userAgent.match(/msie\s*(\d+)/i);
+        if(IE){
+            IE = IE[1];
+        }else{
+            IE = false;
+        }
+    }
     win.cobra = {};
-    cobra.version = "0.1rc1";
+    cobra.doc = doc;
+    cobra.version = "{{version}}";
+    cobra.ie = IE||doc.attachEvent;
+    cobra.noop = noop;
+    cobra.cfg = {
+        debug : "{{debug}}"
+    };
     //locale
     cobra.locale = "zh-cn";
 
     cobra.uid = function(){
         return "_" + __uidSeed++;
     };
-
+    var DOMID = 17602;
+    cobra.domUID = function(){
+        return "cb_" + DOMID++;
+    };
     cobra.config = {};
-    //directive prefix
-    //won't use this directive in phase one
-    //TODO:
-    cobra.attrPrefixes = ['cb-', 'cb:', 'ng-', 'ng:'];
+    //directive object:
+    cobra.directive = {};
+    //DOM constrants
+    cobra.DOM = {
+        NODE_TYPE_ELEMENT : 1,
+        NODE_TYPE_TEXT : 3,
+        NODE_TYPE_COMMENT : 8,
+        NODE_TYPE_DOCUMENT : 9,
+        NODE_TYPE_DOCUMENT_FRAGMENT : 11
+    };
     //internal functions
     //check the given property is in the object or not
     function isNotObjectProperty(obj, name){
@@ -163,9 +188,94 @@
             };
         }
     };
+    function parse(html, data, transform, scope){
+        if(!html||!data) return "";
+        scope = scope || win;
+        transform = transform ? ride(scope, transform) : function(v) { return v;};
+        return html.replace(/\$\{([^\s\:\}]+)(?:\:([^\s\:\}]+))?\}/g, function(match, key, format){
+            var value = getOBJ(key, false, data);
+            if(format){
+                value = getOBJ(format, false, scope).call(scope, value, key);
+            }
+            return transform(value, key).toString();
+        });
+    }
+    function escapeString(str, except){
+        return str.replace(/([\.$?*|{}\(\)\[\]\\\/\+\-^])/g, function(ch){
+            if(except && except.indexOf(ch) != -1){
+                return ch;
+            }
+            return "\\" + ch;
+        });
+    }
+
+    var eventSupport = {};
+    function hasEvent(eventName){
+        if(eventName === "input" && (cobra.ie && cobra.ie <= 11)) return false;
+        if(!(eventSupport[eventName])){
+            var divElm = doc.createElement('div');
+            eventSupport[eventName] = 'on' + eventName in divElm;
+            divElm = null;
+        }
+        return eventSupport[eventName];
+    }
+
+    function isArraylike( it ) {
+        return it && it !== undefined &&
+            // keep out built-in constructors (Number, String, ...) which have length
+            $.type(it) !== "string"  && !$.isFunction(it) &&
+            !(it.tagName && it.tagName.toLowerCase() == "form") &&
+            ($.isArray(it) || isFinite(it.length));
+    }
+
+    var lang = {
+        isArraylike : isArraylike,
+        hasEvent : hasEvent,
+        escapeString : escapeString,
+        parse : parse,
+        isEmpty : isEmpty,
+        ride  : ride,
+        getProp : getProp,
+        compile : T.compile
+    };
     //+++++++++++++++++++++++++A mini observe engine begin +++++++++++++++++++++++++++
-
-
+    //check cookie supportive
+    cobra.cookie = function(/*String*/name, /*String?*/ value, /*__cookieProps?*/ props){
+        var c = document.cookie, ret;
+        if(arguments.length == 1){
+            var matches = c.match(new RegExp("(?:^|; )" + escapeString(name) + "=([^;]*)"));
+            ret = matches ? decodeURIComponent(matches[1]) : undefined;
+        }else{
+            props = props || {};
+            var exp = props.expires;
+            if(typeof exp == "number"){
+                var d = new Date();
+                d.setTime(d.getTime() + exp*24*60*60*1000);
+                exp = props.expires = d;
+            }
+            if(exp && exp.toUTCString){ props.expires = exp.toUTCString(); }
+            value = encodeURIComponent(value);
+            var updatedCookie = name + "=" + value, propName;
+            for(propName in props){
+                updatedCookie += "; " + propName;
+                var propValue = props[propName];
+                if(propValue !== true){ updatedCookie += "=" + propValue; }
+            }
+            document.cookie = updatedCookie;
+        }
+        return ret;
+    };
+    cobra.cookie.isSupported = function(){
+        if(!("cookieEnabled" in navigator)){
+            this("__cookieTest__", "CookiesAllowed");
+            navigator.cookieEnabled = this("__cookieTest__") == "CookiesAllowed";
+            if(navigator.cookieEnabled){
+                this("__cookieTest__", "", {expires: -1});
+            }
+        }
+        return navigator.cookieEnabled;
+    };
+    cobra.cookieSupported = cobra.cookie.isSupported();
     //+++++++++++++++++++++++++AOP implementation begin +++++++++++++++++++++++++++
     cobra.aspect = (function(){
         /**
@@ -267,7 +377,9 @@
                     if(advised.prev_around == advised){
                         rs = advised.prev_around.target.apply(this, arguments);
                     }
-                }catch (e){ throw e; }
+                }catch (e){
+                   throw e;
+                }
                 //running the after chain
                 for(process = advised.prev_after; process !== advised; process = process.prev_after){
                     process.after.apply(this, arguments);
@@ -342,7 +454,7 @@
                     m = obj.methodNames.slice();
                 for(var i = 0, l = c.length; i < l; i++){
                     //syn up the real property's value
-                    c[i]["_"+prop] = c[i][prop];
+                    //c[i]["_"+prop] = c[i][prop];
                     if(context && c[i] === context){
                         context[m[i]].call(context, context[prop]);
                         break;
@@ -359,7 +471,7 @@
         };
     })();
     //+++++++++++++++++++++++++A mini observe engine end +++++++++++++++++++++++++++
-    //+++++++++++++++++++++++++OO implementation begin+++++++++++++++++++++++++++
+
     //+++++++++++++++++++++++++OO implementation begin+++++++++++++++++++++++++++
     cobra._ = (function(){
         /**
@@ -520,7 +632,7 @@
                 }
                 t = name = src = null;
             },
-            //Create a constructor using a compact notation for inheritance and prototype extension.
+        //
             declare = function(obj){
                 var superclass = obj["~superclass"], proto = {}, clsName = obj["~name"], ctor = false, crackPrivate = false, privates = [];
                 if(superclass){
@@ -554,7 +666,7 @@
                 }
                 var f = (function(ctor){
                     return function(){
-                        f.executed || processSynthesize(this);
+                        f.executed || processSynthesize(f, this);
                         if(ctor){
                             ctor.apply(this,arguments);
                         }
@@ -565,8 +677,6 @@
                 //cache meta information
                 f._meta = {ctor : obj.ctor, synthesize : obj["~synthesize"], _super : superclass, transparent : rPorot};
                 rPorot._super = callSuperImpl;
-                //add inheritance cache brust
-                rPorot.__icb__ = {};
                 //constructor the prototype
                 f.prototype = rPorot;
                 f.privates = privates;
@@ -575,7 +685,7 @@
                 //
                 rPorot._class = f;
                 //synthesize properties
-                __synthesizes.push(f);
+                //__synthesizes.push(f);
                 //add name if specified
                 if(clsName){
                     setObject(clsName, f);
@@ -584,20 +694,18 @@
                 //return
                 return f;
             },
-            processSynthesize = function(context){
-                for(var it, i = 0, l = __synthesizes.length; i < l; i++){
-                    it = __synthesizes[i];
-                    it.executed || injectSynthesize(it, context);
+            processSynthesize = function(it, ctx){
+                if(it){
+                    it.executed || injectSynthesize(it, ctx);
                 }
-                __synthesizes.length = 0;
             },
-            injectSynthesize = function (it, context){
+            injectSynthesize = function (it, ctx){
                 for(var i = 0 , synthesize = it._meta.synthesize, l = synthesize ? synthesize.length : 0; i < l; i++){
-                    synthesizeProperty(it.prototype, synthesize[i], context);
+                    synthesizeProperty(it.prototype, synthesize[i], ctx);
                 }
                 it.executed = true;
             },
-            synthesizeProperty = function (proto, prop, context){
+            synthesizeProperty = function (proto, prop, ctx){
                 var m = prop.charAt(0).toUpperCase() + prop.substr(1),
                 //getter
                     mGet = "get" + m,
@@ -620,7 +728,7 @@
                     return this[mGet]();
                 };
                 //to support IE7/IE8
-                if(IE && IE < 9){
+                if(cobra.ie && cobra.ie < 9){
                     /**
                      // IE8 not all JavaScript Objects can use Object.defineProperty. This is so werid
                      // We have to chose another solution to support IE7 and IE8
@@ -629,7 +737,7 @@
                      // And consider that if we don't change to use function to minitor watching callbacks
                      // Here we go
                      */
-                    cobra.observe.add(context, prop, mSet);
+                    cobra.observe.add(ctx, prop, mSet);
                 }else{
                     Object.defineProperty(proto, prop, {
                         get: getter,
@@ -700,7 +808,7 @@
                     return [];
                 }
                 if(value === undefined){
-                    if(!schema.optional){
+                    if(schema.required){
                         addError("is missing and it is not optional");
                     }
                 }else{
@@ -780,6 +888,10 @@
                     for(var i in objTypeDef){
                         if(objTypeDef.hasOwnProperty(i) && !(i.charAt(0) == '_' && i.charAt(1) == '_')){
                             var value = instance[i];
+                            if(typeof value === "string"){
+                                //avoid XSS attack
+                                instance[i] = instance[i].replace(/<\/?script>/igm, "").replace(/<!--(.*?)(-->)?/igm,"");
+                            }
                             var propDef = objTypeDef[i];
                             checkProp(value,propDef,path,i);
                         }
@@ -1205,7 +1317,7 @@
                         }
                     },
                     exposeLang : function(){
-                        return {};
+                        return lang;
                     }
                 },
                 /**
@@ -1509,6 +1621,7 @@
         //only for easy use
         v.use = v.__AMD.BoLin.use;
         v.add = v.__AMD.BoLin.add;
+        v.config = v.__AMD.pkg.configure;
     })(cobra);
     //+++++++++++++++++++++++++something about AMD end+++++++++++++++++++++++++++
     //looks for a src attribute ending in cobra.js
@@ -1533,337 +1646,151 @@
 
         }
     })(cobra);
-
-
-    //+++++++++++++++++++++++++Internal cfg begin+++++++++++++++++++++++++++
-    win.cobraCfg = {
-        pkgs : [
-            {
-                name : "api",
-                path : "../cfg/api"
+    //+++++++++++++++++++++++++Embedbed message box begin +++++++++++++++++++++++++++
+    var $msgBox;
+    (function(){
+        function msgBox(){
+            this._done = '<div cb-type="warn"><i class="iconfont">&#xf0156;</i><span>${msg}</span><span cb-type="close"><i class="iconfont">&#xf00b3;</i></span></div>';
+            this._warn = '<div cb-type="warn"><i class="iconfont">&#xf0153;</i><span>${msg}</span><span cb-type="close"><i class="iconfont">&#xf00b3;</i></span></div>';
+            this._info = '<div cb-type="info"><i class="iconfont">&#xf0142;</i><span>${msg}</span><span cb-type="close"><i class="iconfont">&#xf00b3;</i></span></div>';
+            this._error = '<div cb-type="error"><i class="iconfont">&#xf0155;</i><span>${msg}</span><span cb-type="close"><i class="iconfont">&#xf00b3;</i></span></div>';
+            this.wrapper = $('<div style="position:fixed;top:0;left:50%;width:400px;margin-left:-200px;padding:6px 10px;z-index:9999;opacity:0.97;"></div>');
+            this.background = "#428bca";
+            this.init();
+        }
+        $.extend(msgBox.prototype, {
+            init : function(){
+                $(document.body).append(this.wrapper);
+                this.handleEvent();
             },
-            {
-                name : "schema",
-                path : "../cfg/schema"
-            }
-        ],
-        async : true,
-        debug : false
-    };
-    //+++++++++++++++++++++++++Internal cfg end  +++++++++++++++++++++++++++
+            _setStyle : function(it){
+                it.css({
+                    'margin' : '4px 0',
+                    'color' : '#fff',
+                    'padding': '6px 28px 6px 10px',
+                    'border-radius': '4px',
+                    'line-height' : '1.3em',
+                    'font-size' : '13px',
+                    'position' : 'relative',
+                    'transform' : 'rotateX(-90deg) translateZ(20px) scale(1)',
+                    'transition' : '0.6s',
+                    'overflow' : 'hidden',
+                    'background' : this.background
+                });
+                var close = it.find("span[cb-type=close]");
+                close.css({
+                    'position' : 'absolute',
+                    'display' : 'block',
+                    'right' : '-24px',
+                    'top' : '0',
+                    'width' : '24px',
+                    'height' : '100%',
+                    'cursor' : 'pointer',
+                    'transition' : 'right 0.15s',
+                    'background' : 'rgba(255, 255, 255, 0.2)',
+                    'filter' : 'progid:DXImageTransform.Microsoft.gradient(startColorstr=#ffffff20,endColorstr=#ffffff20)'
+                });
+                close.find("i").css({
+                    'font-size' : '12px',
+                    'position' : 'absolute',
+                    'top' : '50%',
+                    'margin-top' : '-8px',
+                    'left' : '50%',
+                    'margin-left' : '-6px'
+                });
 
-    //+++++++++++++++++++++++++A Base class pre-defined begin+++++++++++++++++++++++++++
-    cobra._({
-
-        "~name" : "cobra.base",
-
-        //model directive
-        "+nodePrefix" : "cb-node", //detect the elements' attribute along with cb-node, cb-node={name}
-        //check whether the cobra has been booted or not
-        _booted : false,
-
-        $ : {}, // to collect the instances from "cb-node", won't allow to be inherited
-
-        Q : {}, // to collect those elements filtered through by selectors
-
-        _attrHash : {}, // to cache attribute names and their getter and setter
-
-        propertyCallbacks : [],
-
-        api : "test",
-        /**
-         * constructor
-         *
-         * arguments /Object/
-         *
-         * {
-         *      selector : ['.a','.b','.c']
-         * }
-         *
-         */
-        ctor : function(args){
-            //some methods related to the changes of DOM operation
-            var self = this,
-                notify = function(){
-                    self.notify.call(self, arguments, this);
-                };
-
-            this._options = args||false;
-            cobra.aspect.after(this, "onPostBootStrap", this.postCreate);
-            cobra.aspect.before(this, "_bootstrap", this.onBeforeBootStrap);
-            cobra.aspect.after(this, "_bootstrap", this.onPostBootStrap);
-            cobra.aspect.after($.fn, "append", notify);
-            //don't allow to use attr to add/remove cb-node currently
-            //TODO: add support
-            //cobra.aspect.after($.fn, "attr", notify);
-            cobra.aspect.before($.fn, "attr", function(){
-                var arity = arguments.length;
-                if(arity == 2 && arguments[0] === cobra.base.nodePrefix && arguments[1]){
-                    throw new Error("Attribute cb-node is not allowed to be modified in runtime!");
-                }
-            });
-            cobra.aspect.after($.fn, "html", notify);
-            cobra.aspect.after($.fn, "appendTo", notify);
-            cobra.aspect.after($.fn, "prepend", notify);
-            cobra.aspect.after($.fn, "prependTo", notify);
-            cobra.aspect.after($.fn, "after", notify);
-            cobra.aspect.after($.fn, "before", notify);
-            cobra.aspect.after($.fn, "insertAfter", notify);
-            cobra.aspect.after($.fn, "insertBefore", notify);
-            cobra.aspect.after($.fn, "wrap", notify);
-            cobra.aspect.after($.fn, "unwrap", notify);
-            cobra.aspect.after($.fn, "wrapAll", notify);
-            cobra.aspect.after($.fn, "wrapInner", notify);
-            cobra.aspect.after($.fn, "replaceWith", notify);
-            cobra.aspect.after($.fn, "empty", notify);
-            cobra.aspect.after($.fn, "remove", notify);
-            cobra.aspect.after($.fn, "detach", notify);
-
-            var def = new $.Deferred();
-            $.when(def).done(ride(self,function(){
-                this._bootstrap();
-            }));
-            cobra.use(["api/" + self.api], ride(this, function(api){
-                this.api = api;
-                def.resolve();
-            }));
-        },
-
-        _bootstrap : function(){
-            if(!this._booted){
-                $('[' + cobra.base.nodePrefix + ']').each(ride(this, function(index, elem){
-                    var $elem = $(elem);
-                    var attr = $elem.attr(cobra.base.nodePrefix);
-                    this._helper$(attr, elem);
-                    //clear it
-                    $elem = attr = null;
-                }));
-                if(this._options){
-                    if(this._options.selector){
-                        $.each(this._options.selector, ride(this,function(index, s){
-                            this.notifyQ(s);
-                        }));
-                    }
-                }
-                this._booted = true;
-            }
-        },
-        _helper$ : function(name, value){
-            var _name = "_" + name;
-            if(this._watchCallbacks && !this._watchCallbacks["_" + _name]){
-                this.watch(_name, this.update);
-            }
-            this.set(_name, value[0]||value);
-            this.$[name] = $(value);
-        },
-        /**
-         * Helper function for set and get
-         * @param names
-         */
-        _helper : function(name){
-            var ah = this._attrHash;
-            if(ah[name]) return ah[name];
-            var _name = name.charAt(0).toUpperCase() + name.substr(1);
-            return (ah[name] = {
-                setter : "_set" + _name,
-                getter : "_get" + _name
-            });
-        },
-        /**
-         * We have to notify the Q changes manually in case some changes are dynamic
-         * eg: this.notifyQ(".a");
-         * @param selector
-         */
-        notifyQ : function(selector){
-            //remove . if is a class selector
-            //remove # if is a id selector
-            this.Q[selector.replace(/[\.#]/g,"")] = $(selector);
-        },
-
-        "set" : function(name, value){
-            if($.type(name) === "object"){
-                //if an object
-                for(var n in name){
-                    if(name.hasOwnProperty(n) && n !="_watchCallbacks"){
-                        this.set(n, name[n]);
-                    }
-                }
-            }
-            var helper = this._helper(name),
-                oldVal = this._get(name, helper),
-                setter = this[helper.setter],
-                result;
-            if($.isFunction(setter)){
-                result = setter.apply(this, Array.prototype.slice.call(arguments, 1));
-            }else{
-                //no setter
-                this[name] = value;
-            }
-            if(this._watchCallbacks){
-                // If setter returned a promise, wait for it to complete, otherwise call watches immediately
-                $.when(result).done(ride(this, function(){
-                    this._watchCallbacks(name, oldVal, value);
-                }));
-            }
-        },
-
-        "get" : function(name){
-            return this._get(name, this._helper(name));
-        },
-        /**
-         *
-         */
-        _get : function(name, helper){
-            return $.isFunction(this[helper.getter]) ? this[helper.getter]() : this[name];
-        },
-        /**
-         * template parse
-         *
-         * @param html
-         *      a string with expressions in the form `${key}` to be replaced
-         * @param data
-         *      data to search
-         * @param transform
-         *      a function to process all parameters before replacing
-         * @param scope
-         *      where to look for optional
-         * @returns {string}
-         *
-         * example:
-         *      parse("File '${0}' is not found in directory '${1}'.",["foo.html","/temp"]);
-         *      parse("File '${name}' is not found in directory '${info.dir}'.", { name: "foo.html", info: { dir: "/temp" } });
-         *      parse("${0} is not found in ${1}.", ["foo.html","/temp"], function(str){var prefix = (str.charAt(0) == "/") ? "directory": "file";return prefix + " '" + str + "'";});
-         *      parse("${0:postfix}", ["thinger"], null, {postfix: function(value, key){return value + " -- howdy";});
-         */
-        parse : function(html, data, transform, scope){
-            if(!html||!data) return "";
-            scope = scope || win;
-            transform = transform ? ride(scope, transform) : function(v) { return v;};
-            return html.replace(/\$\{([^\s\:\}]+)(?:\:([^\s\:\}]+))?\}/g, function(match, key, format){
-                var value = getOBJ(key, false, data);
-                if(format){
-                    value = getOBJ(format, false, scope).call(scope, value, key);
-                }
-                return transform(value, key).toString();
-            });
-        },
-        /**
-         * Watches a property for changes
-         * @param name
-         * @param cb
-         */
-        watch : function(name, cb){
-            var callbacks = this._watchCallbacks;
-            if(!callbacks){
+            },
+            handleEvent : function(){
                 var self = this;
-                callbacks = this._watchCallbacks = function(name, oldValue, value, ignoreCatchall){
-                    var notify = function(propertyCallbacks){
-                        if(propertyCallbacks){
-                            propertyCallbacks = propertyCallbacks.slice();
-                            for(var i = 0, l = propertyCallbacks.length; i < l; i++){
-                                propertyCallbacks[i].call(self, name, oldValue, value);
-                            }
-                        }
-                    };
-                    notify(callbacks['_' + name]);
-                    if(!ignoreCatchall){
-                        notify(callbacks["*"]); // the catch-all
+                this.wrapper.mouseenter(function(){
+                   $(this).find("span[cb-type=close]").css({right : 0});
+                }).mouseleave(function(){
+                    $(this).find("span[cb-type=close]").css({right : '-24px'});
+                }).click(function(){
+                    self._remove($(this));
+                });
+            },
+            info : function(msg){
+                this.background = "#428bca";
+                this.$info = $(parse(this._info, {msg : msg}));
+                this.wrapper.append(this.$info);
+                this._setStyle(this.$info);
+                var self = this;
+                this._show(this.$info);
+            },
+            warn : function(msg){
+                this.background = "#f0ad4e";
+                this.$warn = $(parse(this._warn, {msg : msg}));
+                this.wrapper.append(this.$warn);
+                this._setStyle(this.$warn);
+                var self = this;
+                this._show(this.$warn);
+            },
+            error : function(msg){
+                this.background = "#d9534f";
+                this.$error = $(parse(this._error, {msg : msg}));
+                this.wrapper.append(this.$error);
+                this._setStyle(this.$error);
+                this._show(this.$error);
+            },
+            done : function(msg){
+                this.background = "#5cb85c";
+                this.$done = $(parse(this._done, {msg : msg}));
+                this.wrapper.append(this.$done);
+                this._setStyle(this.$done);
+                this._show(this.$done);
+            },
+            _remove : function($d){
+                $d.css({
+                    'height' : '0',
+                    'padding' : '0 28px 0 10px',
+                    'opacity' : '0',
+                    'transition' : '0.4s'
+                });
+                var tl = setTimeout(function(){
+                    if(tl){
+                        clearTimeout(tl);
                     }
-                }
+                    $d.remove();
+                }, 400);
+            },
+            _show : function(it){
+                var self = this;
+                setTimeout(function(){
+                    it.css({'transform' : 'rotateX(0deg) translateZ(45px) scale(1)'});
+                });
+                setTimeout(function(){
+                    self._remove(it);
+                }, 4000);
             }
-            if(!cb && $.isFunction(name)){
-                cb = name;
-                name = "*";
+        });
+        cobra.msgBox = $msgBox = msgBox;
+    })();
+    //+++++++++++++++++++++++++Embedbed message box end +++++++++++++++++++++++++++
+    (function(v){
+        typeof console !== "undefined" || (win.console = {});
+        var mds = [
+            "assert", "count", "debug", "dir", "dirxml", "error", "group",
+            "groupEnd", "info", "profile", "profileEnd", "time", "timeEnd",
+            "trace", "warn", "log"
+        ];
+        var tn, i = 0, origins = {};
+        while((tn = mds[i++])){
+            if(!console[tn]){
+                (function(method){
+                    console[method] = ("log" in console) && v.cfg.debug === "true" ? function(){
+                        var a = Array.prototype.slice.call(arguments);
+                        a.unshift(method + ":");
+                        console["log"](a.join(" "));
+                    } : noop;
+                })(tn);
             }else{
-                name = '_' + name;
-            }
-            this.propertyCallbacks = callbacks[name];
-            if($.type(this.propertyCallbacks) !== "object"){
-                this.propertyCallbacks = callbacks[name] = [];
-            }
-            this.propertyCallbacks.push(cb);
-
-        },
-        /**
-         * unwatches a property for changes
-         * @param cb
-         */
-        unwatch : function(cb){
-            var index = $.inArray(cb, this.propertyCallbacks);
-            if(index > -1){
-                this.propertyCallbacks.splice(index, 1);
-            }
-        },
-
-        notify : function(args, target){
-            var suspect = args[0];
-            if($.type(suspect) === "object"){
-                if((suspect[0] && suspect[0].nodeType)||(suspect && suspect.nodeType)){
-                    //get cb-node
-                    var cbNode = $(suspect).attr(cobra.base.nodePrefix);
-                    this._helper$(cbNode, suspect[0]||suspect);
-                }
-            }else if($.type(suspect) === "string"){
-                try{
-
-                }catch (e){
-                    throw  new Error("Please make sure the fragment string is correct!");
+                if(v.cfg.debug === "false"){
+                    console[tn] = noop;
                 }
             }
-        },
-        /**
-         * see the options of jQuery Ajax
-         * The only different is we use name instead of url here
-         * eg:
-         *      {
-         *          name : "api1",
-         *          type : "POST",
-         *          dataType : "json",
-         *          success :
-         *          error :
-         *          ...
-         *      }
-         * @param options
-         */
-        request : function(options){
-            if(!options.name) { throw new Error("No API name is defined!");}
-            var name = options.name;
-            delete options.name;
-            options.url = this.api[name];
-            options = $.extend({dataType:"json"}, options);
-            var success = options.success, failed = options.error;
-            options.success = ride(this, function(data){
-                //load schema
-                $.use(["schema/" + name], ride(this,function(schema){
-                    //validate json through schema
-                    var result = cobra.validate(data, schema, false);
-                    if(result.valid){
-                        success.call.apply(this, [data]);
-                    }else{
-                        //overlay to show error page
-                        //print here temporary
-                        console.log(result.errors);
-                    }
-                }));
-            });
-
-            options.error = ride(this, function(){
-                //
-
-                
-            });
-            $.ajax(options);
-        },
-        //interface can be implemented by sub-classes
-        onBeforeBootStrap : noop,
-        //interface can be implemented by sub-classes
-        onPostBootStrap : noop,
-        update : noop,
-        //sub-class should implement this method,
-        //this funciton will be executed after onPostBootStrap
-        postCreate : noop
-    });
-    //+++++++++++++++++++++++++A Base class pre-defined end+++++++++++++++++++++++++++
+        }
+    })(cobra);
     //boot start
     cobra.boot = function(config) {
         cobra.__AMD.pkg.configure(cobra.__AMD.defaultCfg);
@@ -1872,16 +1799,25 @@
     }
     //before booting, set AMD user config
     cobra.boot(cobraCfg);
+    cobra.ride = ride;
     cobra = safeMix({},cobra);
-
-
-    //test
-    $(function(){
-        var boot = new cobra.base({selector : ['.a']});
-        //var span = $("<span cb-node='test3'>test</span>");
-        //boot.$.test1.append(span);
-        //console.log(boot.$.test1);
-    });
-
-
-})(jQuery, window);
+})(jQuery, window, doT);
+//navigation common handle
+//$(function(){
+//    $("ul.seller-nav-main").on("mouseenter" , ">li.ui-nav-item" , function(){
+//        if(!$(this).hasClass("ui-nav-item-current")){
+//            $(this).find(">ul.ui-nav-submain").addClass("preview").css({left : 'auto'});
+//            $(this).find(">a").addClass("preview");
+//        }
+//    }).on("mouseleave", ">li.ui-nav-item", function(){
+//        if(!$(this).hasClass("ui-nav-item-current")){
+//            $(this).find(">ul.ui-nav-submain").removeClass("preview");
+//            $(this).find(">a").removeClass("preview");
+//        }
+//    });
+//    //TODO: move to common place to handle the user name
+//    if(cobra.cookieSupported){
+//        var userName = cobra.cookie("username");
+//        $("#login-status").find("a.account").html(userName);
+//    }
+//});
